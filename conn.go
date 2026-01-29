@@ -3,6 +3,7 @@ package spectrum
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,9 +25,12 @@ import (
 )
 
 const (
-	packetDecodeNeeded = uint8(iota)
-	packetDecodeNotNeeded
+	packetFlagDecodeNeeded uint8 = 1 << iota
+	packetFlagCompressed
+	packetFlagBatched
 )
+
+const compressionThreshold = 256
 
 var bufferPool = sync.Pool{
 	New: func() any {
@@ -41,18 +45,20 @@ var headerPool = sync.Pool{
 }
 
 type conn struct {
-	addr         *net.UDPAddr
-	conn         io.ReadWriteCloser
-	reader       *spectrumprotocol.Reader
-	writer       *spectrumprotocol.Writer
-	clientData   login.ClientData
-	identityData login.IdentityData
-	runtimeID    uint64
-	uniqueID     int64
-	shieldID     int32
-	latency      atomic.Value
-	pool         packet.Pool
-	closed       chan struct{}
+	addr            *net.UDPAddr
+	conn            io.ReadWriteCloser
+	reader          *spectrumprotocol.Reader
+	writer          *spectrumprotocol.Writer
+	clientData      login.ClientData
+	identityData    login.IdentityData
+	runtimeID       uint64
+	uniqueID        int64
+	shieldID        int32
+	latency         atomic.Value
+	pool            packet.Pool
+	cacheEnabled    bool
+	closed          chan struct{}
+	bufferedPackets []packet.Packet
 }
 
 func newConn(rwc io.ReadWriteCloser, pool packet.Pool) (*conn, error) {
@@ -100,16 +106,25 @@ func newConn(rwc io.ReadWriteCloser, pool packet.Pool) (*conn, error) {
 
 // ReadPacket ...
 func (c *conn) ReadPacket() (packet.Packet, error) {
-	pk, err := c.read()
-	if err != nil {
-		return nil, err
+	if len(c.bufferedPackets) == 0 {
+		pks, err := c.read()
+		if err != nil {
+			return nil, err
+		}
+		c.bufferedPackets = append(c.bufferedPackets, pks...)
 	}
 
-	if pk, ok := pk.(*spectrumpacket.Latency); ok {
+	pk := c.bufferedPackets[0]
+	c.bufferedPackets = c.bufferedPackets[1:]
+
+	switch pk := pk.(type) {
+	case *spectrumpacket.Latency:
 		latency := (time.Now().UnixMilli() - pk.Timestamp) + pk.Latency
 		c.latency.Store(time.Duration(latency) * time.Millisecond)
 		_ = c.WritePacket(&spectrumpacket.Latency{Timestamp: 0, Latency: latency})
 		return c.ReadPacket()
+	case *packet.ClientCacheStatus:
+		c.cacheEnabled = pk.Enabled
 	}
 	return pk, nil
 }
@@ -120,7 +135,10 @@ func (c *conn) WritePacket(pk packet.Packet) error {
 	header := headerPool.Get().(*packet.Header)
 	defer func() {
 		buf.Reset()
-		bufferPool.Put(buf)
+		// Pool optimization: all objects should roughly be the same size for performance.
+		if buf.Cap() == 256 {
+			bufferPool.Put(buf)
+		}
 		headerPool.Put(header)
 	}()
 
@@ -130,14 +148,16 @@ func (c *conn) WritePacket(pk packet.Packet) error {
 		return err
 	}
 
-	var decodeByte byte
+	var flags uint8
 	if shouldDecodePacket(pk.ID()) {
-		decodeByte = packetDecodeNeeded
-	} else {
-		decodeByte = packetDecodeNotNeeded
+		flags |= packetFlagDecodeNeeded
 	}
 	pk.Marshal(protocol.NewWriter(buf, c.shieldID))
-	return c.writer.Write(append([]byte{decodeByte}, snappy.Encode(nil, buf.Bytes())...))
+	if buf.Len() > compressionThreshold {
+		return c.writer.WriteWithFlags(flags|packetFlagCompressed, snappy.Encode(nil, buf.Bytes()))
+	}
+	return c.writer.WriteWithFlags(flags, buf.Bytes())
+
 }
 
 // Flush ...
@@ -162,7 +182,7 @@ func (c *conn) ChunkRadius() int {
 
 // ClientCacheEnabled ...
 func (c *conn) ClientCacheEnabled() bool {
-	return false
+	return c.cacheEnabled
 }
 
 // RemoteAddr ...
@@ -263,7 +283,7 @@ func (c *conn) Close() (err error) {
 }
 
 // read reads a packet from the reader and returns it.
-func (c *conn) read() (pk packet.Packet, err error) {
+func (c *conn) read() (pks []packet.Packet, err error) {
 	select {
 	case <-c.closed:
 		return nil, errors.New("connection closed")
@@ -275,16 +295,53 @@ func (c *conn) read() (pk packet.Packet, err error) {
 		return nil, err
 	}
 
-	decompressed, err := snappy.Decode(nil, payload)
+	flags := payload[0]
+	var decompressed []byte
+	if flags&packetFlagCompressed != 0 {
+		decompressed, err = snappy.Decode(nil, payload[1:])
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		decompressed = payload[1:]
+	}
+
+	isBatched := flags&packetFlagBatched != 0
+	buf := bytes.NewBuffer(decompressed)
+
+	if isBatched {
+		return c.decodeBatched(buf)
+	}
+	pk, err := c.decodePacket(buf)
 	if err != nil {
 		return nil, err
 	}
+	return []packet.Packet{pk}, nil
+}
 
-	buf := bytes.NewBuffer(decompressed)
+func (c *conn) decodeBatched(buf *bytes.Buffer) (pks []packet.Packet, err error) {
+	for buf.Len() > 0 {
+		var length uint32
+		if err := binary.Read(buf, binary.LittleEndian, &length); err != nil {
+			return nil, err
+		}
+		data := make([]byte, length)
+		if _, err := io.ReadFull(buf, data); err != nil {
+			return nil, err
+		}
+
+		pk, err := c.decodePacket(bytes.NewBuffer(data))
+		if err != nil {
+			return nil, err
+		}
+		pks = append(pks, pk)
+	}
+	return pks, nil
+}
+
+func (c *conn) decodePacket(buf *bytes.Buffer) (pk packet.Packet, err error) {
 	header := headerPool.Get().(*packet.Header)
-	defer func() {
-		headerPool.Put(header)
-	}()
+	defer headerPool.Put(header)
 	if err := header.Read(buf); err != nil {
 		return nil, err
 	}
@@ -301,7 +358,7 @@ func (c *conn) read() (pk packet.Packet, err error) {
 	pk = factory()
 	pk.Marshal(protocol.NewReader(buf, c.shieldID, false))
 	pk = c.translatePacket(pk, false)
-	return
+	return pk, nil
 }
 
 // expect reads a packet from the connection and expects it to have the ID passed.
