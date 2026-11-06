@@ -426,10 +426,12 @@ func (c *conn) translatePacket(pk packet.Packet, serverSent bool) packet.Packet 
 	case *packet.ChangeMobProperty:
 		pk.EntityUniqueID = int64(c.translateRuntimeID(uint64(pk.EntityUniqueID), serverSent))
 	case *packet.ClientBoundMapItemData:
-		for i, x := range pk.TrackedObjects {
-			if x.Type == protocol.MapObjectTypeEntity {
-				x.EntityUniqueID = c.translateUniqueID(x.EntityUniqueID, serverSent)
-				pk.TrackedObjects[i] = x
+		if objects, ok := pk.TrackedObjects.Value(); ok {
+			for i, x := range objects {
+				if x.Type == protocol.MapObjectTypeEntity {
+					x.EntityUniqueID = c.translateOptionalUniqueID(x.EntityUniqueID, serverSent)
+					objects[i] = x
+				}
 			}
 		}
 	case *packet.CommandBlockUpdate:
@@ -490,12 +492,14 @@ func (c *conn) translatePacket(pk packet.Packet, serverSent bool) packet.Packet 
 	case *packet.PlayerAction:
 		pk.EntityRuntimeID = c.translateRuntimeID(pk.EntityRuntimeID, serverSent)
 	case *packet.PlayerAuthInput:
-		if pk.InputData.Load(packet.InputFlagClientPredictedVehicle) {
-			pk.ClientPredictedVehicle = c.translateUniqueID(pk.ClientPredictedVehicle, serverSent)
-		}
+		pk.ClientPredictedVehicle = c.translateOptionalUniqueID(pk.ClientPredictedVehicle, serverSent)
 	case *packet.PlayerList:
 		for i := range pk.Entries {
 			pk.Entries[i].EntityUniqueID = c.translateUniqueID(pk.Entries[i].EntityUniqueID, serverSent)
+		}
+	case *packet.PrimitiveShapes:
+		for i := range pk.Shapes {
+			pk.Shapes[i].AttachedToEntityID = c.translateOptionalUniqueID(pk.Shapes[i].AttachedToEntityID, serverSent)
 		}
 	case *packet.RemoveActor:
 		pk.EntityUniqueID = c.translateUniqueID(pk.EntityUniqueID, serverSent)
@@ -521,7 +525,7 @@ func (c *conn) translatePacket(pk packet.Packet, serverSent bool) packet.Packet 
 	case *packet.SetScoreboardIdentity:
 		if pk.ActionType != packet.ScoreboardIdentityActionClear {
 			for i := range pk.Entries {
-				pk.Entries[i].EntityUniqueID = c.translateUniqueID(pk.Entries[i].EntityUniqueID, serverSent)
+				pk.Entries[i].EntityUniqueID = c.translateOptionalUniqueID(pk.Entries[i].EntityUniqueID, serverSent)
 			}
 		}
 	case *packet.ShowCredits:
@@ -592,6 +596,14 @@ func (c *conn) translateUniqueID(runtimeId int64, serverSent bool) int64 {
 		return replace
 	}
 	return runtimeId
+}
+
+// translateOptionalUniqueID translates a unique ID that a packet may leave out.
+func (c *conn) translateOptionalUniqueID(id protocol.Optional[int64], serverSent bool) protocol.Optional[int64] {
+	if v, ok := id.Value(); ok {
+		return protocol.Option(c.translateUniqueID(v, serverSent))
+	}
+	return id
 }
 
 // translateMetadata updates entity metadata fields that contain unique IDs or runtime IDs,
