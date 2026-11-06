@@ -5,7 +5,6 @@ go 1.26.0
 require (
 	github.com/brentp/intintmap v0.0.0-20251106190759-56907b1f8479
 	github.com/cooldogedev/spectral v0.0.5
-	github.com/cooldogedev/spectrum v0.0.43
 	github.com/df-mc/dragonfly v0.10.11-0.20251229144828-00510a3ec3b8
 	github.com/golang/snappy v1.0.0
 	github.com/google/uuid v1.6.0
@@ -26,6 +25,7 @@ require (
 	github.com/francoispqt/gojay v1.2.13 // indirect
 	github.com/go-gl/mathgl v1.2.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/onsi/gomega v1.38.2 // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
@@ -59,7 +59,5 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 )
-
-replace github.com/cooldogedev/spectrum => ../spectrum-internal
 
 replace github.com/df-mc/dragonfly => github.com/oomph-ac/dragonfly v0.0.0-20260904153233-9221758c1eee

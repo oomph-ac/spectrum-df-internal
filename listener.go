@@ -1,6 +1,7 @@
 package spectrum
 
 import (
+	spectrumpacket "github.com/cooldogedev/spectrum-df/server/packet"
 	tr "github.com/cooldogedev/spectrum-df/transport"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
@@ -27,7 +28,15 @@ func (l *Listener) Accept() (session.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newConn(c, packet.NewClientPool())
+	return newConn(c, clientPool())
+}
+
+// clientPool is gophertunnel's pool with this module's Spectrum packets, which a program that also imports Spectrum's own packet package would otherwise have replaced with Spectrum's types.
+func clientPool() packet.Pool {
+	pool := packet.NewClientPool()
+	pool[spectrumpacket.IDConnectionRequest] = func() packet.Packet { return &spectrumpacket.ConnectionRequest{} }
+	pool[spectrumpacket.IDLatency] = func() packet.Packet { return &spectrumpacket.Latency{} }
+	return pool
 }
 
 // Disconnect ...

@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	spectrumprotocol "github.com/cooldogedev/spectrum/protocol"
-	spectrumpacket "github.com/cooldogedev/spectrum/server/packet"
+	spectrumprotocol "github.com/cooldogedev/spectrum-df/protocol"
+	spectrumpacket "github.com/cooldogedev/spectrum-df/server/packet"
 	"github.com/golang/snappy"
 	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft"
@@ -82,7 +82,11 @@ func newConn(rwc io.ReadWriteCloser, pool packet.Pool) (*conn, error) {
 		return nil, err
 	}
 
-	connectionRequest, _ := connectionRequestPacket.(*spectrumpacket.ConnectionRequest)
+	connectionRequest, ok := connectionRequestPacket.(*spectrumpacket.ConnectionRequest)
+	if !ok {
+		_ = c.Close()
+		return nil, fmt.Errorf("expected a ConnectionRequest, got %T", connectionRequestPacket)
+	}
 	addr, err := net.ResolveUDPAddr("udp", connectionRequest.Addr)
 	if err != nil {
 		_ = c.Close()

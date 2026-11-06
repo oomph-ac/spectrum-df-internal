@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	spectrumprotocol "github.com/cooldogedev/spectrum/protocol"
-	spectrumpacket "github.com/cooldogedev/spectrum/server/packet"
+	spectrumprotocol "github.com/cooldogedev/spectrum-df/protocol"
+	spectrumpacket "github.com/cooldogedev/spectrum-df/server/packet"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 

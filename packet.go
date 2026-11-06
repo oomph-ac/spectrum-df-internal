@@ -2,7 +2,7 @@ package spectrum
 
 import (
 	"github.com/brentp/intintmap"
-	spectrumpacket "github.com/cooldogedev/spectrum/server/packet"
+	spectrumpacket "github.com/cooldogedev/spectrum-df/server/packet"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
