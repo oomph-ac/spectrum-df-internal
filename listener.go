@@ -36,6 +36,7 @@ func (l *Listener) Disconnect(conn session.Conn, reason string) error {
 		HideDisconnectionScreen: reason == "",
 		Message:                 reason,
 	})
+	_ = conn.Flush()
 	return conn.Close()
 }
 

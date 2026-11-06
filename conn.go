@@ -32,6 +32,9 @@ const (
 
 const compressionThreshold = 256
 
+// flushInterval is the length of Dragonfly's tick.
+const flushInterval = time.Second / 20
+
 var bufferPool = sync.Pool{
 	New: func() any {
 		return bytes.NewBuffer(make([]byte, 0, 256))
@@ -59,6 +62,10 @@ type conn struct {
 	cacheEnabled    bool
 	closed          chan struct{}
 	bufferedPackets []packet.Packet
+	// unflushed is set when a Minecraft packet was written after the last Spectrum Flush packet.
+	unflushed atomic.Bool
+	// flushMu makes a Flush wait for one that is still writing its frame, so that a Close right after cannot cut that frame off.
+	flushMu sync.Mutex
 }
 
 func newConn(rwc io.ReadWriteCloser, pool packet.Pool) (*conn, error) {
@@ -101,6 +108,7 @@ func newConn(rwc io.ReadWriteCloser, pool packet.Pool) (*conn, error) {
 	}
 	setCache(c.identityData.XUID, connectionRequest.Cache, connectionRequest.ProtocolID)
 	c.latency.Store(time.Duration(0))
+	go c.flushLoop()
 	return c, nil
 }
 
@@ -153,16 +161,43 @@ func (c *conn) WritePacket(pk packet.Packet) error {
 		flags |= packetFlagDecodeNeeded
 	}
 	pk.Marshal(protocol.NewWriter(buf, c.shieldID))
+	var err error
 	if buf.Len() > compressionThreshold {
-		return c.writer.WriteWithFlags(flags|packetFlagCompressed, snappy.Encode(nil, buf.Bytes()))
+		err = c.writer.WriteWithFlags(flags|packetFlagCompressed, snappy.Encode(nil, buf.Bytes()))
+	} else {
+		err = c.writer.WriteWithFlags(flags, buf.Bytes())
 	}
-	return c.writer.WriteWithFlags(flags, buf.Bytes())
-
+	// Spectrum's own packets take IDs from 500 up, and the proxy does not pass them on to the player.
+	if err == nil && pk.ID() < spectrumpacket.IDConnectionRequest {
+		c.unflushed.Store(true)
+	}
+	return err
 }
 
-// Flush ...
+// Flush has the proxy send the player the packets written since the last Flush, which it holds until a Spectrum Flush packet.
 func (c *conn) Flush() error {
-	return nil
+	c.flushMu.Lock()
+	defer c.flushMu.Unlock()
+	if !c.unflushed.Swap(false) {
+		return nil
+	}
+	return c.WritePacket(&spectrumpacket.Flush{})
+}
+
+// flushLoop flushes once a tick until the connection closes, since Dragonfly calls Flush only when it disconnects a player.
+func (c *conn) flushLoop() {
+	t := time.NewTicker(flushInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-t.C:
+			if err := c.Flush(); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // ClientData ...
